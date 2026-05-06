@@ -1,0 +1,515 @@
+---
+title: "Modello Statistico per la Previsione del Peso Neonatale"
+author: "Antonio Giordano"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+```{r pacchetti, include=FALSE}
+# Pacchetti utilizzati nel progetto.
+# Nota: non inserire install.packages() nel report finale.
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(car)
+library(MASS)
+library(lmtest)
+library(ggplot2)
+```
+
+# Introduzione
+
+Il presente progetto ha l'obiettivo di costruire un modello statistico per prevedere il peso dei neonati alla nascita, utilizzando variabili cliniche e demografiche raccolte da tre ospedali.
+
+Il peso alla nascita rappresenta un indicatore importante dello stato di salute neonatale. Una previsione accurata può supportare il personale medico nell'identificazione precoce di situazioni potenzialmente critiche e nella pianificazione delle risorse ospedaliere.
+
+# Obiettivi del progetto
+
+Gli obiettivi principali dell'analisi sono:
+
+- descrivere le caratteristiche principali del campione;
+- verificare alcune ipotesi statistiche sulle variabili raccolte;
+- costruire un modello di regressione per prevedere il peso alla nascita;
+- selezionare un modello parsimonioso e interpretabile;
+- valutare la qualità del modello finale;
+- produrre previsioni su nuovi casi clinici.
+
+# Caricamento dei dati
+
+```{r caricamento-dati}
+dati=read.csv("neonati.csv")
+n = nrow(dati)
+kable(summary(dati)) |>
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+str(dati)
+colSums(is.na(dati))
+```
+
+# Preparazione dei dati
+
+In questa sezione vengono controllati i tipi delle variabili e vengono trasformate in fattori le variabili categoriche.
+
+```{r preparazione-dati}
+# Esempio di preparazione dei dati.
+# Decommentare e adattare i nomi delle variabili al dataset reale.
+
+dati <- dati |>
+  mutate(
+    Fumatrici = factor(Fumatrici, levels = c(0, 1), labels = c("No", "Si")),
+    Tipo.parto = factor(Tipo.parto),
+    Ospedale = factor(Ospedale),
+    Sesso = factor(Sesso)
+  )
+```
+
+
+# Statistica descrittiva
+
+Dall’analisi delle variabili quantitative emerge che il **peso medio** dei neonati è pari a circa **3284 grammi**, con una **mediana** di 3300 grammi. La vicinanza tra **media** e **mediana** suggerisce una distribuzione sostanzialmente **simmetrica**.
+
+La **deviazione standard** del peso, pari a circa 525 grammi, indica una **variabilità moderata** all’interno del campione. I **quartili** (Q1 = 2990, Q3 = 3620) confermano una dispersione contenuta dei dati.
+
+Anche le altre misure antropometriche, come **lunghezza** e **circonferenza cranica**, mostrano valori medi rispettivamente pari a circa **495 mm** e **340 mm**, con distribuzioni equilibrate e senza evidenti asimmetrie.
+
+Per quanto riguarda la **durata della gestazione**, il valore medio è pari a circa **39 settimane**, con una mediana anch’essa pari a 39, indicando che la maggior parte delle nascite avviene **a termine**.
+
+L’**età media delle madri** è pari a circa **28 anni**, con una dispersione moderata (deviazione standard di circa 5 anni), suggerendo una buona variabilità nel campione.
+
+Infine, il **numero medio di gravidanze** è pari a circa 1, con una mediana di 1, evidenziando come la maggior parte delle madri si trovi alla **prima o seconda gravidanza**.
+
+Nel complesso, non emergono valori estremamente anomali dalle statistiche riassuntive, suggerendo una **buona qualità del dataset**.
+
+
+L’analisi delle **variabili qualitative** evidenzia una distribuzione complessivamente equilibrata tra le principali categorie. Per quanto riguarda il **sesso del neonato**, si osserva una ripartizione pressoché uniforme tra maschi e femmine, con percentuali pari rispettivamente a circa il 49.8% e il 50.2%, indicando un campione bilanciato sotto questo profilo. La distribuzione tra i diversi **ospedali** risulta anch’essa omogenea, con ciascuna struttura che contribuisce a circa un terzo delle osservazioni. Questo aspetto garantisce una buona rappresentatività del campione rispetto ai centri coinvolti. In relazione al **tipo di parto**, si rileva una prevalenza di parti naturali (circa 71%) rispetto ai cesarei (circa 29%), dato coerente con quanto generalmente osservato nella pratica clinica. Infine, la variabile relativa al **fumo materno** evidenzia una netta predominanza di madri non fumatrici (circa 96%), mentre la quota di fumatrici risulta contenuta (circa 4%). Questa distribuzione riflette un comportamento atteso nella popolazione, ma suggerisce anche una possibile limitata variabilità per questa variabile nelle analisi successive. Nel complesso, le variabili categoriali presentano una distribuzione plausibile e coerente, risultando adeguate per le successive analisi inferenziali.
+
+```{r descrittiva}
+# Tabella descrittiva per variabili quantitative
+variabili_num <- c("Peso", "Lunghezza", "Gestazione", "Cranio", "Anni.madre", "N.gravidanze")
+
+stat_num <- dati |>
+  summarise(across(
+    all_of(variabili_num),
+    list(
+      media = ~mean(.x),
+      mediana = ~median(.x),
+      sd = ~sd(.x),
+      q1 = ~quantile(.x, 0.25),
+      q3 = ~quantile(.x, 0.75)
+    )
+  ))
+
+kable(stat_num, digits = 2)|>
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+# Tabella di frequenza per variabili qualitative
+variabili_cat <- c("Fumatrici", "Tipo.parto", "Ospedale", "Sesso")
+
+tab_freq <- lapply(variabili_cat, function(v) {
+  freq_ass <- table(dati[[v]])
+  freq_rel <- freq_ass / nrow(dati)
+  
+  data.frame(
+    Variabile = v,
+    Categoria = names(freq_ass),
+    Frequenza = as.vector(freq_ass),
+    Frequenza_relativa = round(as.vector(freq_rel), 3),
+    Percentuale = round(as.vector(freq_rel * 100), 2)
+  )
+}) |>
+  dplyr::bind_rows()
+
+kable(tab_freq)|>
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+
+```
+
+
+# grafici statistica descrittiva
+
+L’analisi dei **boxplot** delle principali variabili quantitative evidenzia una distribuzione complessivamente regolare, con una **tendenza centrale** ben definita e una dispersione contenuta per la maggior parte delle osservazioni. In particolare, il **peso alla nascita** presenta una distribuzione centrata intorno a valori tipici, con una **mediana** pari a circa 3300 grammi e un intervallo interquartile compreso tra circa 3000 e 3600 grammi. Analogamente, anche le variabili **lunghezza**, **circonferenza cranica** e **durata della gestazione** mostrano distribuzioni coerenti con il contesto clinico e una variabilità moderata. Tuttavia, in tutte le variabili analizzate si osserva la presenza di **valori anomali (outlier)**, rappresentati dai punti al di fuori dei baffi del boxplot. Tali osservazioni risultano particolarmente evidenti soprattutto nella parte inferiore della distribuzione per alcune variabili, suggerendo la presenza di valori estremi più frequenti tra le osservazioni più basse. L’analisi dei **valori minimi e massimi** non evidenzia la presenza di dati implausibili o incoerenti. Al contrario, i valori estremi osservati risultano compatibili con la naturale variabilità del fenomeno, potendo essere associati, ad esempio, a **nascite premature** o a neonati con dimensioni superiori alla media. Pertanto, la presenza di **outlier** non viene interpretata come indicativa di errori nei dati, ma come espressione della variabilità intrinseca del contesto reale. Di conseguenza, tali osservazioni verranno mantenute nel dataset e considerate nelle successive analisi, in particolare nella costruzione del **modello di regressione**.
+
+
+```{r grafici}
+boxplot(dati$Peso, main = "Boxplot Peso")
+boxplot(dati$Lunghezza, main = "Boxplot Lunghezza")
+boxplot(dati$Gestazione, main = "Boxplot Gestazione")
+boxplot(dati$Cranio, main = "Boxplot Cranio")
+
+```
+
+## altri grafici descrittivi per capire al meglio il dataset
+
+```{r grafici descrittivi}
+#istogramma del peso
+hist(dati$Peso,
+     main = "Distribuzione del peso alla nascita",
+     xlab = "Peso (grammi)",
+     breaks = 30)
+#Boxplot peso per sesso 
+boxplot(Peso ~ Sesso, data = dati,
+        main = "Peso per sesso",
+        xlab = "Sesso",
+        ylab = "Peso")
+
+#Boxplot peso per fumo
+boxplot(Peso~Fumatrici,data=dati,
+        main="Peso per fumatrici",
+        xlab="Fumatrici",
+        ylab="Peso")
+
+```
+
+# Test d'ipotesi
+
+## Differenze nella frequenza dei parti cesarei tra ospedali
+
+Si vuole verificare se il tipo di parto sia indipendente dall'ospedale di nascita.
+
+- Ipotesi nulla \(H_0\): tipo di parto e ospedale sono indipendenti.
+- Ipotesi alternativa \(H_1\): tipo di parto e ospedale non sono indipendenti.
+
+**analizziamo i risultati ottenuti:**
+Il valore del **p-value** è pari a 0.5778, superiore al livello di significatività del 5%.
+
+Pertanto, non si rifiuta l’**ipotesi nulla** di indipendenza tra **ospedale di nascita** e **tipo di parto**.
+
+Non emergono evidenze statisticamente significative per affermare che la distribuzione tra parti naturali e cesarei differisca tra i diversi ospedali. I dati suggeriscono quindi che il tipo di parto sia sostanzialmente indipendente dalla struttura ospedaliera considerata.
+
+```{r test-cesarei-ospedali}
+tabella_parti=table(dati$Ospedale, dati$Tipo.parto)
+test_chi=chisq.test(tabella_parti)
+test_chi
+```
+
+## Confronto della media del peso e della lunghezza con il valore della popolazione
+
+**test per il peso**
+**le mie ipotesi sono:**
+H₀: μ = 3300
+H₁: μ ≠ 3300
+Il valore del **p-value** risulta pari a 0.1296, superiore al livello di significatività del 5%. Pertanto, non si rifiuta l’**ipotesi nulla**. Non emergono evidenze statisticamente significative per affermare che la media del peso nel campione sia diversa da 3300 grammi. Questo risultato è coerente anche con l’**intervallo di confidenza al 95%** ([3263.49 ; 3304.67]), che include il valore di riferimento della popolazione. Si può quindi concludere che la media osservata nel campione è **compatibile** con quella della popolazione, considerando la variabilità campionaria.
+
+**test per la lunghezza**
+**le mie ipotesi sono:**
+H₀: μ = 500
+H₁: μ ≠ 500
+
+Il valore del **p-value** risulta estremamente inferiore al livello di significatività del 5% (p-value < 2.2e-16), pertanto si rifiuta l’**ipotesi nulla**.
+
+Si conclude che la **lunghezza media nel campione** è statisticamente diversa da 500 mm.
+
+Questo risultato è coerente anche con l’**intervallo di confidenza al 95%** ([493.66 ; 495.72]), che non include il valore di riferimento.
+
+La lunghezza media osservata nel campione (circa 494.7 mm) risulta quindi significativamente inferiore al valore ipotizzato.
+
+```{r test-media-peso-lunghezza}
+#test per il peso
+media_popolazione_peso=3300
+t.test(dati$Peso,
+       mu=3300,
+       conf.level=0.95,
+       alternative = "two.sided")
+
+#test per la lunghezza
+media_popolazione_lunghezza=500
+t.test(dati$Lunghezza,
+       mu=500,
+       conf.level=0.95,
+       alternative = "two.sided")
+```
+
+## Differenze antropometriche tra maschi e femmine
+Le misure antropometriche sono significativamente diverse tra i due sessi
+Per verificare se le **misure antropometriche** differiscono tra i due sessi, sono stati effettuati **t-test per campioni indipendenti**. Poiché sono stati eseguiti più test, è stata considerata una correzione per confronti multipli tramite il metodo di **Bonferroni**. Per quanto riguarda il **peso alla nascita**, il test evidenzia un valore del **p-value** estremamente inferiore al livello di significatività del 5% (p-value < 2.2e-16). Anche dopo correzione, il risultato rimane altamente significativo. Si rifiuta quindi l’**ipotesi nulla** e si conclude che esiste una **differenza statisticamente significativa** tra maschi e femmine. In particolare, il peso medio è pari a circa **3161 g per le femmine** e **3408 g per i maschi**. Analogamente, per la **lunghezza**, il test mostra una differenza significativa (p-value < 2.2e-16), che rimane tale anche dopo correzione. I maschi presentano una lunghezza media maggiore (**circa 500 mm**) rispetto alle femmine (**circa 490 mm**). Anche per la **circonferenza cranica**, il test evidenzia una differenza significativa (p-value = 1.7e-13), che permane dopo l’applicazione della correzione di Bonferroni. I valori medi risultano pari a circa **337.6 mm per le femmine** e **342.4 mm per i maschi**. Nel complesso, i risultati indicano che le **misure antropometriche differiscono significativamente tra i due sessi**, e tali differenze risultano robuste anche considerando la correzione per confronti multipli.
+
+```{r test-sesso-antropometriche}
+#test per il peso dato il sesso
+t.test(Peso ~ Sesso, data = dati)
+
+#test per la lunghezza dato il sesso
+t.test(Lunghezza~Sesso,data=dati)
+
+#test per il diametro del cranio dato il sesso
+t.test(Cranio~Sesso,data=dati)
+
+# Poiché sono stati effettuati più test statistici sulle diverse misure antropometriche,
+# si applica la correzione di Bonferroni ai p-value per controllare l’inflazione del rischio
+# di errore di tipo I (falsi positivi) e garantire una maggiore accuratezza nell’interpretazione dei risultati.
+
+p_values <- c(
+  t.test(Peso ~ Sesso, data = dati)$p.value,
+  t.test(Lunghezza ~ Sesso, data = dati)$p.value,
+  t.test(Cranio ~ Sesso, data = dati)$p.value
+)
+
+p.adjust(p_values, method = "bonferroni")
+```
+
+# Modello di regressione lineare multipla
+
+L'obiettivo è prevedere il peso alla nascita del neonato utilizzando le variabili cliniche e demografiche disponibili.
+
+È stato stimato un **modello di regressione lineare multipla** al fine di analizzare l’impatto delle diverse variabili sul **peso alla nascita**.
+
+Il modello risulta complessivamente significativo (p-value < 2.2e-16) e presenta un **coefficiente di determinazione R² pari a 0.73**, indicando che circa il 73% della variabilità del peso è spiegata dalle variabili incluse.
+
+Dall’analisi dei coefficienti emerge che alcune variabili risultano **statisticamente significative**, mentre altre non mostrano un effetto rilevante.
+
+In particolare, la **durata della gestazione** risulta altamente significativa (p-value < 2e-16) e presenta un coefficiente positivo: un aumento di una settimana di gestazione è associato, in media, a un incremento del peso di circa **32.6 grammi**, coerentemente con le aspettative cliniche.
+
+Anche la **lunghezza** e la **circonferenza cranica** risultano fortemente significative (p-value < 2e-16), indicando che neonati con dimensioni maggiori tendono ad avere un peso più elevato.
+
+Il **sesso del neonato** risulta anch’esso significativo (p-value < 0.001), con un coefficiente positivo per i maschi: a parità delle altre condizioni, i neonati maschi pesano in media circa **77.5 grammi in più** rispetto alle femmine.
+
+Tra le variabili con significatività più moderata, si osserva che il **numero di gravidanze** e il **tipo di parto** risultano significativi, mentre per quanto riguarda l’**ospedale**, solo una delle strutture mostra un effetto statisticamente rilevante rispetto alla categoria di riferimento.
+
+Al contrario, l’**età della madre** e il **fumo materno** non risultano statisticamente significativi, suggerendo che, una volta controllato per le altre variabili, non emergono evidenze di un loro effetto diretto sul peso alla nascita.
+
+Nel complesso, il modello evidenzia come le principali determinanti del peso alla nascita siano le **caratteristiche fisiche del neonato**, la **durata della gestazione** e il **sesso**, mentre altri fattori mostrano un impatto più limitato o non significativo.
+
+Alla luce dei risultati ottenuti, si procederà all’applicazione di opportune tecniche di selezione e miglioramento del modello, con l’obiettivo di ottenere una specificazione più parsimoniosa, mantenendo solo le variabili statisticamente rilevanti e verificando la bontà complessiva del modello attraverso adeguate analisi diagnostiche.
+
+```{r modello-completo}
+#controlliamo se il peso segue una distribuzione normale
+shapiro.test(dati$Peso)
+
+#Il test di Shapiro-Will evidenzia un p-value estremamente ridotto, portando al rifiuto #dell’ipotesi di normalità. Tuttavia, data l’elevata numerosità del campione (n = 2500), il test #risulta particolarmente sensibile anche a minime deviazioni dalla normalità. Pertanto, tale #risultato non viene considerato problematico ai fini dell’analisi, anche alla luce del Teorema #del Limite Centrale, che garantisce la robustezza dei metodi statistici utilizzati.
+
+
+mod_1 <- lm(Peso ~ Anni.madre + N.gravidanze + Fumatrici + Gestazione +
+  Lunghezza + Cranio + Tipo.parto + Ospedale + Sesso,  data = dati)
+summary(mod_1)
+```
+
+# Selezione del modello  migliore
+
+Al fine di individuare un modello più parsimonioso, è stata applicata una procedura di selezione stepwise basata sul **criterio di informazione bayesiano (BIC)**, che penalizza maggiormente la complessità del modello rispetto ad altri criteri.
+
+La procedura ha portato all’eliminazione delle variabili non rilevanti, quali **età della madre**, **fumo materno**, **tipo di parto** e **ospedale**, suggerendo che queste non contribuiscono in modo significativo alla spiegazione del peso alla nascita una volta considerate le altre variabili.
+
+Il modello finale include le variabili **numero di gravidanze**, **durata della gestazione**, **lunghezza**, **circonferenza cranica** e **sesso del neonato**, che risultano le principali determinanti del peso.
+
+Questo risultato è coerente con l’analisi precedente, confermando il ruolo centrale delle **caratteristiche fisiche del neonato** e della **gestazione**, mentre altri fattori mostrano un impatto più limitato.
+
+Rispetto al modello completo, si osserva che il valore di **R² rimane sostanzialmente invariato** (da circa 0.729 a 0.727), indicando una perdita minima di capacità esplicativa.
+
+Tuttavia, il modello BIC risulta significativamente più **parsimonioso**, avendo eliminato variabili non significative come **età della madre**, **fumo materno**, **tipo di parto** e **ospedale**.
+
+Pertanto, il modello selezionato rappresenta un buon compromesso tra **accuratezza e semplicità**, migliorando l’interpretabilità e riducendo il rischio di overfitting
+
+```{r selezione-modello}
+#vediamo prima la correlazione tra le varibiali numeriche a livello grafico
+vars_num <- dati[, c("Peso", "Lunghezza", "Cranio",
+                     "Gestazione", "Anni.madre", "N.gravidanze")]
+
+panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
+{
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  r <- (cor(x, y))
+  txt <- format(c(r, 1), digits = digits)[1]
+  txt <- paste0(prefix, txt)
+  if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+  text(0.5, 0.5, txt, cex = 1.5)
+}
+#correlazioni
+pairs(vars_num,lower.panel=panel.cor, upper.panel=panel.smooth)
+
+stepwise.mod=MASS::stepAIC(mod_1,
+              direction="both",
+              k=log(n))
+
+#vediamo i dettagli del modello migliore trovato
+mod_2=lm(Peso ~ N.gravidanze + Gestazione + Lunghezza + Cranio + Sesso,data=dati)
+summary(mod_2)
+
+```
+
+# Valutazione del modello finale e Diagnostica dei residui
+**analisi grafica dei resuidi**
+
+Il grafico **Residuals vs Fitted** non evidenzia pattern sistematici rilevanti, suggerendo che l’ipotesi di linearità è complessivamente soddisfatta, sebbene si osservi una lieve curvatura.
+
+Il **Q-Q plot** mostra una distribuzione dei residui approssimativamente normale, con alcune deviazioni nelle code, riconducibili alla presenza di valori estremi.
+
+Il grafico **Scale-Location** evidenzia una leggera eteroschedasticità, indicando una variabilità dei residui moderatamente crescente al variare dei valori stimati.
+
+Infine, l’analisi dei **valori influenti** tramite il grafico Residuals vs Leverage non evidenzia osservazioni particolarmente critiche, suggerendo che il modello non è influenzato in modo significativo da singoli punti.
+
+Nel complesso, le ipotesi del modello risultano **ragionevolmente soddisfatte**, rendendo il modello adeguato per fini descrittivi e predittivi.
+
+##ANALISI DEL LEVERAGE
+L’analisi del **leverage** evidenzia la presenza di diverse osservazioni con valori superiori alla soglia teorica. Tuttavia, tali valori risultano complessivamente contenuti e distribuiti su un numero elevato di osservazioni, caratteristica tipica di dataset di grandi dimensioni. Non si osservano punti con leverage estremamente elevato tali da destare particolare preoccupazione. Pertanto, non emergono criticità rilevanti in termini di leverage, e il modello risulta stabile rispetto alla presenza di tali osservazioni.
+
+##ANALISI DEGLI OUTLIER
+Il grafico dei **residui studentizzati** mostra che la maggior parte delle osservazioni si colloca all’interno dell’intervallo [-2 ; 2], indicando un comportamento coerente con le ipotesi del modello.
+Sono presenti alcune osservazioni che si discostano da tale intervallo, identificabili come possibili **outlier**, tra cui un caso particolarmente estremo.
+Tuttavia, il numero di tali osservazioni è molto limitato rispetto alla dimensione complessiva del campione.
+Pertanto, la presenza di questi outlier non appare tale da compromettere la validità complessiva del modello.
+
+##ANALISI DELLA DISTANZA DI COOK
+L’analisi della **Cook’s distance** evidenzia un valore massimo pari a circa 0.83, inferiore alla soglia critica di 1. Ciò indica la presenza di alcune osservazioni con una certa influenza sulle stime del modello, ma non tale da comprometterne la stabilità complessiva. In particolare, tale valore risulta coerente con la presenza di un numero limitato di outlier precedentemente individuati. Nel complesso, non emergono osservazioni fortemente influenti in grado di alterare in modo significativo i risultati del modello.
+
+##TEST SUI RESIDUI
+Nel complesso, l’analisi diagnostica evidenzia alcune deviazioni dalle ipotesi teoriche del modello, in particolare una lieve eteroschedasticità e una non perfetta normalità dei residui. Tuttavia, tali criticità risultano contenute e non compromettono in modo significativo la validità del modello, anche alla luce della numerosità elevata del campione. Inoltre, non si rilevano problemi di autocorrelazione né la presenza di osservazioni fortemente influenti. Pertanto, il modello può essere considerato **adeguato e robusto** sia dal punto di vista descrittivo che predittivo.
+
+```{r metriche-modello}
+#calcoliamo il RMSE
+rmse <- sqrt(mean(residuals(mod_2)^2))
+rmse
+
+#analisi dei resudui graficamente
+par(mfrow=c(2,2))
+plot(mod_2)
+
+
+#LEVERAGE
+lev=hatvalues(mod_2)
+plot(lev)
+p=sum(lev)
+soglia=2*p/n
+abline(h=soglia,col=2)
+lev[lev>soglia]
+
+#vediamo i valori outliers
+plot(rstudent(mod_2))
+abline(h=c(-2,2),col=2)
+outlierTest(mod_2)
+
+#distnza di cook
+cook=cooks.distance(mod_2)
+plot(cook)
+max(cook)
+
+#effetuiamo i test sui resuidi
+bptest(mod_2)
+dwtest(mod_2)
+shapiro.test(residuals(mod_2))
+```
+
+
+
+# Previsione su un nuovo caso
+Una volta validato il modello, è stato utilizzato per effettuare una **previsione del peso alla nascita**.
+
+In particolare, si è considerato il caso di una **neonata** alla **terza gravidanza**, con una durata della gestazione pari a **39 settimane**.
+
+Poiché alcune variabili incluse nel modello, come la **lunghezza** e la **circonferenza cranica**, non sono note a priori, sono stati utilizzati i rispettivi **valori medi campionari**.
+
+La stima ottenuta attraverso il modello fornisce un valore previsto del peso pari a circa **3271 grammi**.
+
+Tale valore risulta coerente con la media osservata nel campione, suggerendo che il modello produce previsioni realistiche.
+
+Questo esempio evidenzia come il modello possa essere utilizzato per effettuare **previsioni pratiche**, fornendo un supporto utile nella pianificazione clinica e nella valutazione dei casi.
+
+```{r previsione-nuovo-caso}
+mean_lunghezza <- mean(dati$Lunghezza)
+mean_cranio <- mean(dati$Cranio)
+#creaione di un nuovo dataset con le varibaili di interesse
+nuovo <- data.frame(
+  N.gravidanze = 3,
+  Gestazione = 39,
+  Lunghezza = mean_lunghezza,
+  Cranio = mean_cranio,
+  Sesso = "F"
+)
+predict(mod_2, newdata = nuovo)
+```
+**analisi Grafica**
+I grafici mostrano l’andamento del **peso previsto alla nascita** in funzione delle **settimane di gestazione**, mantenendo costanti le altre variabili del modello.
+Si osserva una chiara relazione positiva tra la durata della gravidanza e il peso previsto: all’aumentare delle settimane di gestazione aumenta il peso stimato dal modello. Tale risultato conferma quanto emerso dall’analisi di regressione, evidenziando l’importanza della gestazione come principale determinante del peso alla nascita.
+Inoltre, distinguendo i neonati per sesso, emerge che i maschi presentano valori di peso previsto sistematicamente superiori rispetto alle femmine, a parità delle altre condizioni considerate. Questo risultato risulta coerente con la significatività della variabile **Sesso** nel modello finale.
+Le curve appaiono pressoché parallele, suggerendo che l’effetto della gestazione sul peso alla nascita sia simile per entrambi i sessi, mentre la differenza tra maschi e femmine tende a mantenersi relativamente costante.
+Nel complesso, le visualizzazioni confermano i risultati ottenuti tramite il modello di regressione e consentono di rappresentare in modo immediato e intuitivo le principali relazioni tra le variabili considerate.
+
+
+
+```{r grafici previsioni}
+gest_seq <- seq(37, 42, by = 0.5)
+
+nuovi_dati <- data.frame(
+  N.gravidanze = 3,
+  Gestazione = gest_seq,
+  Lunghezza = mean_lunghezza,
+  Cranio = mean_cranio,
+  Sesso = "F"
+)
+
+nuovi_dati$Peso_previsto <- predict(mod_2, newdata = nuovi_dati)
+
+#grafico
+ggplot(nuovi_dati,
+       aes(x = Gestazione,
+           y = Peso_previsto)) +
+  geom_line(linewidth = 1.2, color = "blue") +
+  geom_point(size = 2) +
+  labs(
+    title = "Peso previsto in funzione della gestazione",
+    x = "Settimane di gestazione",
+    y = "Peso previsto (grammi)"
+  ) +
+  theme_minimal()
+
+#differenza tra maschi e femmine
+nuovi_dati2 <- expand.grid(
+  Gestazione = gest_seq,
+  Sesso = c("F", "M")
+)
+
+nuovi_dati2$N.gravidanze <- 3
+nuovi_dati2$Lunghezza <- mean_lunghezza
+nuovi_dati2$Cranio <- mean_cranio
+nuovi_dati2$Peso_previsto <- predict(mod_2, newdata = nuovi_dati2)
+
+ggplot(nuovi_dati2,
+       aes(x = Gestazione,
+           y = Peso_previsto,
+           color = Sesso,
+           group = Sesso)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  labs(
+    title = "Peso previsto per sesso e settimane di gestazione",
+    x = "Settimane di gestazione",
+    y = "Peso previsto (grammi)"
+  ) +
+  theme_minimal()
+
+```
+## CONCLUSIONI
+# Conclusioni
+
+Nel presente progetto è stato sviluppato un modello statistico per la previsione del **peso neonatale alla nascita**, utilizzando informazioni cliniche e demografiche raccolte da tre ospedali.
+
+L’analisi descrittiva iniziale ha evidenziato un dataset complessivamente coerente e privo di anomalie rilevanti, con distribuzioni plausibili sia per le variabili quantitative sia per quelle qualitative. La presenza di alcuni outlier è risultata compatibile con la naturale variabilità del fenomeno osservato e non è stata interpretata come indicativa di errori nei dati.
+Successivamente, sono state verificate diverse ipotesi statistiche tramite opportuni test inferenziali. In particolare, non sono emerse differenze significative nella frequenza dei parti cesarei tra i diversi ospedali, mentre sono state riscontrate differenze significative tra maschi e femmine nelle principali misure antropometriche. Inoltre, il peso medio del campione è risultato compatibile con il valore di riferimento della popolazione, mentre la lunghezza media è risultata significativamente inferiore rispetto al valore ipotizzato.
+È stato quindi costruito un modello di regressione lineare multipla per spiegare il peso alla nascita in funzione delle variabili disponibili. Il modello completo ha evidenziato come le principali determinanti del peso siano la **durata della gestazione**, la **lunghezza**, la **circonferenza cranica** e il **sesso del neonato**.
+Attraverso una procedura di selezione basata sul **criterio BIC**, è stato individuato un modello più parsimonioso che mantiene un’elevata capacità esplicativa, con un coefficiente di determinazione R² pari a circa 0.73. Tale risultato indica che il modello è in grado di spiegare una quota elevata della variabilità del peso neonatale.
+L’analisi diagnostica dei residui ha mostrato una situazione complessivamente soddisfacente: non sono emersi problemi rilevanti di osservazioni influenti o autocorrelazione, mentre le lievi deviazioni dalla normalità e dall’omoschedasticità non risultano tali da compromettere la validità del modello, anche considerando la numerosità elevata del campione.
+Infine, il modello è stato utilizzato per effettuare previsioni pratiche su nuovi casi clinici e le visualizzazioni grafiche hanno consentito di rappresentare in modo intuitivo le principali relazioni tra le variabili, evidenziando in particolare l’effetto positivo della durata della gestazione sul peso previsto alla nascita.
+Nel complesso, il progetto mostra come l’utilizzo di strumenti statistici e modelli predittivi possa fornire un valido supporto nell’ambito della salute neonatale, contribuendo a migliorare la pianificazione clinica, l’identificazione precoce dei fattori di rischio e l’ottimizzazione delle risorse ospedaliere.
+
